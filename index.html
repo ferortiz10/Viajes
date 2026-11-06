@@ -371,6 +371,7 @@ function vistaLugares(){
   const marca = ls.get("exportadoHasta") || 0, nuevos = S.lugares.filter(l => Math.max(l.ts||0, l.editado||0) > marca).length;
   let html = `<div class="card"><h2>Pasar a Italia 2026</h2><p class="muted">Copiá los lugares y, en Italia 2026, andá a Lugares → Pegar desde Estoy acá.</p>
     <div class="row"><button class="btn pri" id="expNuevos" ${nuevos?"":"disabled"}>Copiar nuevos (${nuevos})</button><button class="btn" id="expTodos">Copiar todos</button></div>
+    <div class="row" style="margin-top:10px"><button class="btn" id="expArchivo">📁 Guardar archivo con todos</button></div>
     ${S.exportTxt?`<div class="field"><label for="expTxt">No se pudo copiar solo: seleccioná este texto y copialo</label><textarea id="expTxt" rows="4" readonly>${esc(S.exportTxt)}</textarea></div>`:""}</div>`, dia = "";
   for(const l of S.lugares){
     if(l.fecha !== dia){ dia = l.fecha; html += `<div class="day">${esc(new Date(dia+"T12:00").toLocaleDateString("es-AR",{weekday:"long", day:"numeric", month:"long"}))}</div>`; }
@@ -382,13 +383,20 @@ function vistaLugares(){
   $("app").querySelectorAll("[data-edit]").forEach(b => b.onclick = () => { S.editId = b.dataset.edit; render(); });
   if($("expNuevos")) $("expNuevos").onclick = () => exportarLugares(false);
   if($("expTodos")) $("expTodos").onclick = () => exportarLugares(true);
+  if($("expArchivo")) $("expArchivo").onclick = guardarArchivoLugares;
+}
+const textoLugares = xs => JSON.stringify({tipo:"estoy-aca", v:1, lugares:xs.map(l => ({id:l.id, nombre:l.nombre||"", direccion:l.direccion||"", ciudad:l.ciudad||"", nota:l.nota||"", fecha:l.fecha||"", hora:l.hora||"", lat:l.lat??null, lng:l.lng??null, maps:l.maps||"", quien:l.quien||"", thumb:l.thumb||"", editado:l.editado||l.ts||0}))});
+function guardarArchivoLugares(){
+  const a = document.createElement("a"), u = URL.createObjectURL(new Blob([textoLugares(S.lugares)], {type:"application/json"}));
+  a.href = u; a.download = `lugares-estoy-aca-${hoyISO()}.json`; document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(u), 60000);
+  ls.set("exportadoHasta", Date.now()); toast("Archivo guardado en Descargas. Elegilo en Italia 2026."); render();
 }
 // la marca se guarda en este celular; "Copiar todos" sirve si algo no se llegó a pegar
 async function exportarLugares(todos){
   const marca = ls.get("exportadoHasta") || 0, ahora = Date.now();
   const xs = S.lugares.filter(l => todos || Math.max(l.ts||0, l.editado||0) > marca);
   if(!xs.length){ toast("No hay lugares para copiar."); return; }
-  const txt = JSON.stringify({tipo:"estoy-aca", v:1, lugares:xs.map(l => ({id:l.id, nombre:l.nombre||"", direccion:l.direccion||"", ciudad:l.ciudad||"", nota:l.nota||"", fecha:l.fecha||"", hora:l.hora||"", lat:l.lat??null, lng:l.lng??null, maps:l.maps||"", quien:l.quien||"", thumb:l.thumb||"", editado:l.editado||l.ts||0}))});
+  const txt = textoLugares(xs);
   try{ await navigator.clipboard.writeText(txt); S.exportTxt = ""; ls.set("exportadoHasta", ahora); toast(`${xs.length} lugar${xs.length>1?"es":""} copiado${xs.length>1?"s":""}. Pegalos en Italia 2026.`); }
   catch(e){ S.exportTxt = txt; ls.set("exportadoHasta", ahora); }
   render();
