@@ -352,7 +352,7 @@ function vistaEditar(l){
     const nombre=$("eNom").value.trim(), direccion=$("eDir").value.trim(), ciudad=$("eCiu").value.trim(), nota=$("eNota").value.trim();
     if(!nombre && !direccion && !l.nFotos){ toast("Poné el nombre del lugar o una dirección."); return; }
     $("eOk").disabled = true; $("eOk").textContent = "Guardando…";
-    const cambios = {nombre, direccion, ciudad, nota};
+    const cambios = {nombre, direccion, ciudad, nota, editado:Date.now()};
     // si cambió el lugar, el link y las coordenadas viejas ya no sirven
     if(direccion !== (l.direccion||"") || ciudad !== (l.ciudad||"")){
       if(direccion){ const q = consultaDir(direccion, ciudad), g = await geocodificar(q, null); Object.assign(cambios, {lat:g.lat, lng:g.lng, placeId:"", tipo:"", maps:mapsDeDir(q)}); }
@@ -368,7 +368,10 @@ function vistaEditar(l){
 function vistaLugares(){
   if(S.editId){ const l = S.lugares.find(x=>x.id===S.editId); if(l) return vistaEditar(l); S.editId = null; }
   if(!S.lugares.length){ $("app").innerHTML = `<div class="card"><p class="muted">Todavía no guardaron lugares. Tocá 📍 Estoy acá.</p></div>`; return; }
-  let html = "", dia = "";
+  const marca = ls.get("exportadoHasta") || 0, nuevos = S.lugares.filter(l => Math.max(l.ts||0, l.editado||0) > marca).length;
+  let html = `<div class="card"><h2>Pasar a Italia 2026</h2><p class="muted">Copiá los lugares y, en Italia 2026, andá a Lugares → Pegar desde Estoy acá.</p>
+    <div class="row"><button class="btn pri" id="expNuevos" ${nuevos?"":"disabled"}>Copiar nuevos (${nuevos})</button><button class="btn" id="expTodos">Copiar todos</button></div>
+    ${S.exportTxt?`<div class="field"><label for="expTxt">No se pudo copiar solo: seleccioná este texto y copialo</label><textarea id="expTxt" rows="4" readonly>${esc(S.exportTxt)}</textarea></div>`:""}</div>`, dia = "";
   for(const l of S.lugares){
     if(l.fecha !== dia){ dia = l.fecha; html += `<div class="day">${esc(new Date(dia+"T12:00").toLocaleDateString("es-AR",{weekday:"long", day:"numeric", month:"long"}))}</div>`; }
     html += `<div class="card lug">${l.thumb?`<img src="${l.thumb}" alt="">`:`<div class="ph">📍</div>`}<div style="flex:1;min-width:0"><h3>${esc(l.nombre||l.direccion||"Sin nombre")}</h3>
@@ -377,6 +380,18 @@ function vistaLugares(){
   }
   $("app").innerHTML = html;
   $("app").querySelectorAll("[data-edit]").forEach(b => b.onclick = () => { S.editId = b.dataset.edit; render(); });
+  if($("expNuevos")) $("expNuevos").onclick = () => exportarLugares(false);
+  if($("expTodos")) $("expTodos").onclick = () => exportarLugares(true);
+}
+// la marca se guarda en este celular; "Copiar todos" sirve si algo no se llegó a pegar
+async function exportarLugares(todos){
+  const marca = ls.get("exportadoHasta") || 0, ahora = Date.now();
+  const xs = S.lugares.filter(l => todos || Math.max(l.ts||0, l.editado||0) > marca);
+  if(!xs.length){ toast("No hay lugares para copiar."); return; }
+  const txt = JSON.stringify({tipo:"estoy-aca", v:1, lugares:xs.map(l => ({id:l.id, nombre:l.nombre||"", direccion:l.direccion||"", ciudad:l.ciudad||"", nota:l.nota||"", fecha:l.fecha||"", hora:l.hora||"", lat:l.lat??null, lng:l.lng??null, maps:l.maps||"", quien:l.quien||"", thumb:l.thumb||"", editado:l.editado||l.ts||0}))});
+  try{ await navigator.clipboard.writeText(txt); S.exportTxt = ""; ls.set("exportadoHasta", ahora); toast(`${xs.length} lugar${xs.length>1?"es":""} copiado${xs.length>1?"s":""}. Pegalos en Italia 2026.`); }
+  catch(e){ S.exportTxt = txt; ls.set("exportadoHasta", ahora); }
+  render();
 }
 function vistaAjustes(){
   const cfg = ls.get("cfg")||{};
