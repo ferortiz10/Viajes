@@ -156,14 +156,14 @@ async function cargarViaje(){
   let snap; try{ snap = await getDoc(doc(S.fb.db, "viajes", id)); }catch(e){ snap = null; }
   if(!snap || !snap.exists()){ ls.set("tripId", null); toast("No tenés acceso a ese viaje."); return cargarViaje(); }
   S.tripId = id; ls.set("tripId", id); S.trip = {id, ...snap.data()}; $("titulo").textContent = S.trip.nombre;
-  onSnapshot(query(collection(S.fb.db, "viajes", id, "lugares"), orderBy("ts","desc")), qs => { S.lugares = qs.docs.map(d=>({id:d.id, ...d.data()})); if(S.view==="lugares") render(); });
+  onSnapshot(query(collection(S.fb.db, "viajes", id, "lugares"), orderBy("ts","desc")), qs => { S.lugares = qs.docs.map(d=>({id:d.id, ...d.data()})); if(S.view==="lugares" && !S.editId) render(); });
   $("tabs").hidden = false;
   await revisarCompartido();
   irA(S.view);
 }
 
 // ---------- navegación ----------
-function irA(v){ S.view = v; for(const b of $("tabs").querySelectorAll("button")) b.setAttribute("aria-current", b.dataset.v===v ? "page" : "false"); render(); if(v==="aca" && !S.aca.pos) ubicar(); }
+function irA(v){ S.view = v; S.editId = null; for(const b of $("tabs").querySelectorAll("button")) b.setAttribute("aria-current", b.dataset.v===v ? "page" : "false"); render(); if(v==="aca" && !S.aca.pos) ubicar(); }
 $("tabs").addEventListener("click", e => { const b = e.target.closest("button[data-v]"); if(b) irA(b.dataset.v); });
 function render(){ ({aca:vistaAca, lugares:vistaLugares, ajustes:vistaAjustes})[S.view](); }
 
@@ -188,6 +188,10 @@ async function buscarTexto(q, pos){
   const body = {textQuery:q, maxResultCount:6}; if(pos) body.locationBias = {circle:{center:{latitude:pos.lat, longitude:pos.lng}, radius:3000}};
   return (await places("places:searchText", body)).map(p=>aCand(p,pos));
 }
+// dirección escrita a mano: se busca solo para tener coordenadas y ciudad; se guarda el texto tal cual se escribió
+async function geocodificar(texto, pos){ try{ const r = await buscarTexto(texto, pos); return r[0] ? {texto, lat:r[0].lat, lng:r[0].lng, ciudad:r[0].ciudad} : {texto, lat:null, lng:null, ciudad:""}; }catch(e){ return {texto, lat:null, lng:null, ciudad:""}; } }
+function consultaDir(dir, ciudad){ return ciudad && !dir.toLowerCase().includes(ciudad.toLowerCase()) ? `${dir}, ${ciudad}` : dir; }
+const mapsDeDir = q => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
 function ubicar(){
   const A = S.aca; if(!navigator.geolocation){ A.err = "Este navegador no da la ubicación."; return render(); }
   A.buscando = true; A.err = ""; render();
@@ -199,11 +203,11 @@ function ubicar(){
 }
 async function sugerir(){
   const A = S.aca; if(!A.pos) return;
-  try{ A.cands = await cercanos(A.pos); if(!A.elegido && A.cands[0] && A.cands[0].dist!=null && A.cands[0].dist < 25) elegir(A.cands[0], false); }
+  try{ A.cands = await cercanos(A.pos); if(!A.elegido && !A.dirManual && A.cands[0] && A.cands[0].dist!=null && A.cands[0].dist < 25) elegir(A.cands[0], false); }
   catch(e){ A.err = e.code==="nokey" ? "Falta la clave de Google Maps (Ajustes)." : "Google Maps no respondió: "+e.message; }
   if(!A.ciudad && A.cands.length){ const c = A.cands.find(x=>x.ciudad); if(c) A.ciudad = c.ciudad; }
 }
-function elegir(c, pintar=true){ const A=S.aca; A.elegido = c; A.nombre = c.nombre; A.direccion = c.direccion; if(c.ciudad) A.ciudad = c.ciudad; if(pintar) render(); }
+function elegir(c, pintar=true){ const A=S.aca; A.elegido = c; A.dirManual = false; A.geo = null; A.otra = ""; A.nombre = c.nombre; A.direccion = c.direccion; if(c.ciudad) A.ciudad = c.ciudad; if(pintar) render(); }
 
 // ---------- fotos ----------
 async function achicar(file, max, q){
@@ -272,7 +276,7 @@ async function desdeTextoMaps(txt){
 function vistaAca(){
   const A = S.aca;
   const estado = A.buscando ? `<div class="status">Buscando dónde estás…</div>` : A.err ? `<div class="status">${esc(A.err)}</div>` : A.pos ? `<div class="status ok">${A.pos.deFoto?"Ubicación de la foto":"Estás acá"}${A.pos.acc?` (±${A.pos.acc} m)`:""}${A.ciudad?" · "+esc(A.ciudad):""}</div>` : "";
-  const cands = A.cands.map((c,i)=>`<button class="cand" data-c="${i}" aria-pressed="${A.elegido&&A.elegido.id===c.id}"><span><b>${esc(c.nombre)}</b><small>${esc([c.tipo, c.direccion].filter(Boolean).join(" · "))}</small></span>${c.dist!=null?`<span class="d">${c.dist} m</span>`:""}</button>`).join("");
+  const cands = A.cands.map((c,i)=>`<button class="cand" data-c="${i}" aria-pressed="${!!(A.elegido&&!A.dirManual&&A.elegido.id===c.id)}"><span><b>${esc(c.nombre)}</b><small>${esc([c.tipo, c.direccion].filter(Boolean).join(" · "))}</small></span>${c.dist!=null?`<span class="d">${c.dist} m</span>`:""}</button>`).join("");
   $("app").innerHTML = `
   <div class="card">
     <div class="row"><button class="btn pri" id="aCam">📷 Sacar foto</button><button class="btn" id="aGal">🖼 Galería</button></div>
@@ -284,6 +288,9 @@ function vistaAca(){
     <span class="lbl">¿Dónde están?</span>
     <div class="row"><input id="aBus" class="btn" style="flex:1 1 0;min-width:0;font-weight:400;text-align:left" placeholder="Buscar en Maps por nombre…" enterkeyhint="search"><button class="btn" id="aBusOk" style="flex:none">Buscar</button></div>
     <div class="cands">${cands || (A.pos && !A.buscando ? `<p class="muted">No aparecieron lugares cerca. Escribí el nombre abajo.</p>` : "")}</div>
+    <div class="field" style="margin-bottom:0"><label for="aOtra">¿No es ninguna? Escribí otra dirección</label>
+      <div class="row"><input id="aOtra" style="flex:1 1 0;min-width:0" value="${esc(A.otra||"")}" placeholder="Via Roma 12, Siena" autocomplete="off" enterkeyhint="done"><button class="btn" id="aOtraOk" style="flex:none">Usar</button></div></div>
+    ${A.dirManual && A.direccion ? `<div class="status ok">Dirección elegida: ${esc(A.direccion)}${A.geo && A.geo.lat==null ? " (no la encontré en Maps; se guarda igual)" : ""}</div>` : ""}
   </div>
   <div class="card">
     <div class="field"><label for="aNom">Lugar</label><input id="aNom" value="${esc(A.nombre)}" placeholder="Nombre del local o sitio"></div>
@@ -292,45 +299,84 @@ function vistaAca(){
     <div class="field"><label for="aNota">Nota</label><textarea id="aNota" rows="3" placeholder="Qué les gustó, qué comieron…">${esc(A.nota)}</textarea></div>
     <button class="btn pri big" id="aSave">Guardar en Estoy acá</button>
   </div>`;
-  const sync = () => { A.nombre=$("aNom").value; A.direccion=$("aDir").value; A.ciudad=$("aCiu").value; A.nota=$("aNota").value; };
-  for(const id of ["aNom","aDir","aCiu","aNota"]) $(id).oninput = sync;
+  const sync = () => { if($("aDir").value !== A.direccion) A.dirManual = true; A.otra=$("aOtra").value; A.nombre=$("aNom").value; A.direccion=$("aDir").value; A.ciudad=$("aCiu").value; A.nota=$("aNota").value; };
+  for(const id of ["aNom","aDir","aCiu","aNota","aOtra"]) $(id).oninput = sync;
   $("aCam").onclick = () => $("fCam").click(); $("aGal").onclick = () => $("fGal").click();
-  $("aUbi").onclick = () => { A.elegido=null; A.cands=[]; ubicar(); };
+  $("aUbi").onclick = () => { A.elegido=null; A.dirManual=false; A.geo=null; A.cands=[]; ubicar(); };
   const buscar = async () => { const q=$("aBus").value.trim(); if(!q) return; sync(); try{ A.cands = await buscarTexto(q, A.pos); if(!A.cands.length) toast("Sin resultados."); }catch(e){ toast(e.code==="nokey"?"Falta la clave de Google Maps (Ajustes).":"Google Maps no respondió."); } render(); };
   $("aBusOk").onclick = buscar; $("aBus").onkeydown = e => { if(e.key==="Enter") buscar(); };
   $("app").querySelectorAll("[data-c]").forEach(b => b.onclick = () => { sync(); elegir(A.cands[+b.dataset.c]); });
   $("app").querySelectorAll("[data-delf]").forEach(b => b.onclick = () => { A.fotos.splice(+b.dataset.delf,1); render(); });
+  const usarOtra = async () => {
+    sync(); const q = A.otra.trim(); if(!q){ $("aOtra").focus(); return; }
+    $("aOtraOk").disabled = true;
+    const geo = await geocodificar(q, A.pos);
+    if(A.elegido && A.nombre === A.elegido.nombre) A.nombre = ""; // el nombre era de la opción que se descarta
+    A.elegido = null; A.direccion = q; A.dirManual = true; A.geo = geo; A.ciudad = geo.ciudad || A.ciudad; A.otra = "";
+    render();
+  };
+  $("aOtraOk").onclick = usarOtra; $("aOtra").onkeydown = e => { if(e.key==="Enter") usarOtra(); };
   $("aSave").onclick = guardarLugar;
 }
 async function guardarLugar(){
   const A = S.aca; const {doc, collection, setDoc, writeBatch, serverTimestamp} = S.fb.fs;
-  if(!A.nombre.trim() && !A.fotos.length){ toast("Poné el nombre del lugar o sacá una foto."); return; }
+  if(!A.nombre.trim() && !A.direccion.trim() && !A.fotos.length){ toast("Poné el nombre del lugar, una dirección o sacá una foto."); return; }
   $("aSave").disabled = true; $("aSave").textContent = "Guardando…";
   try{
     const ref = doc(collection(S.fb.db, "viajes", S.tripId, "lugares"));
-    const e = A.elegido; const lat = e?.lat ?? A.pos?.lat ?? null, lng = e?.lng ?? A.pos?.lng ?? null;
+    const dir = A.direccion.trim(), manual = A.dirManual && !!dir;
+    const geo = !manual ? null : A.geo?.texto === dir ? A.geo : await geocodificar(consultaDir(dir, A.ciudad.trim()), A.pos);
+    const e = manual ? null : A.elegido; const lat = manual ? geo.lat : e?.lat ?? A.pos?.lat ?? null, lng = manual ? geo.lng : e?.lng ?? A.pos?.lng ?? null;
     const lugar = { nombre:A.nombre.trim(), direccion:A.direccion.trim(), ciudad:A.ciudad.trim(), nota:A.nota.trim(), lat, lng,
-      placeId:e?.id||"", tipo:e?.tipo||"", maps: e?.maps || (lat!=null?`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`:""),
+      placeId:e?.id||"", tipo:e?.tipo||"", maps: manual ? mapsDeDir(consultaDir(dir, A.ciudad.trim())) : e?.maps || (lat!=null?`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`:""),
       fecha:hoyISO(), hora:ahoraHM(), quien:S.user.displayName?.split(" ")[0]||S.user.email, uid:S.user.uid, nFotos:A.fotos.length, thumb:A.fotos[0]?.thumb||"", ts:Date.now(), creado:serverTimestamp() };
     // cada foto en su propio documento (Firestore admite hasta 1 MB por documento)
     const b = writeBatch(S.fb.db); b.set(ref, lugar);
     A.fotos.forEach((f,i) => b.set(doc(collection(S.fb.db, "viajes", S.tripId, "fotos")), {lugarId:ref.id, orden:i, img:f.full, ts:Date.now()}));
     await b.commit();
-    toast("Guardado: "+(lugar.nombre||"lugar"));
+    toast("Guardado: "+(lugar.nombre||lugar.direccion||"lugar"));
     S.aca = { pos:A.pos, cands:A.cands, elegido:null, fotos:[], nombre:"", direccion:"", ciudad:A.ciudad, nota:"", buscando:false, compartido:"" };
     irA("lugares");
   }catch(err){ toast("No se pudo guardar: "+(err.code||err.message)); $("aSave").disabled=false; $("aSave").textContent="Guardar en Estoy acá"; }
 }
+function vistaEditar(l){
+  $("app").innerHTML = `<div class="card"><h2>Editar lugar</h2>
+    <div class="field"><label for="eNom">Lugar</label><input id="eNom" value="${esc(l.nombre)}"></div>
+    <div class="field"><label for="eDir">Dirección</label><input id="eDir" value="${esc(l.direccion)}"></div>
+    <div class="field"><label for="eCiu">Ciudad</label><input id="eCiu" value="${esc(l.ciudad)}"></div>
+    <div class="field"><label for="eNota">Nota</label><textarea id="eNota" rows="3">${esc(l.nota)}</textarea></div>
+    <div class="row"><button class="btn" id="eNo">Cancelar</button><button class="btn pri" id="eOk">Guardar cambios</button></div></div>`;
+  window.scrollTo(0,0);
+  $("eNo").onclick = () => { S.editId = null; render(); };
+  $("eOk").onclick = async () => {
+    const nombre=$("eNom").value.trim(), direccion=$("eDir").value.trim(), ciudad=$("eCiu").value.trim(), nota=$("eNota").value.trim();
+    if(!nombre && !direccion && !l.nFotos){ toast("Poné el nombre del lugar o una dirección."); return; }
+    $("eOk").disabled = true; $("eOk").textContent = "Guardando…";
+    const cambios = {nombre, direccion, ciudad, nota};
+    // si cambió el lugar, el link y las coordenadas viejas ya no sirven
+    if(direccion !== (l.direccion||"") || ciudad !== (l.ciudad||"")){
+      if(direccion){ const q = consultaDir(direccion, ciudad), g = await geocodificar(q, null); Object.assign(cambios, {lat:g.lat, lng:g.lng, placeId:"", tipo:"", maps:mapsDeDir(q)}); }
+      else Object.assign(cambios, {placeId:"", tipo:""});
+    }
+    const {doc, updateDoc} = S.fb.fs; const fin = () => { toast("Cambios guardados"); S.editId = null; render(); };
+    const falla = err => { toast("No se pudo guardar: "+(err.code||err.message)); if($("eOk")){ $("eOk").disabled=false; $("eOk").textContent="Guardar cambios"; } };
+    const p = updateDoc(doc(S.fb.db, "viajes", S.tripId, "lugares", l.id), cambios);
+    // sin señal Firestore lo deja en cola y recién confirma al reconectarse: no hay que quedarse esperando
+    if(navigator.onLine){ try{ await p; fin(); }catch(err){ falla(err); } } else { p.catch(falla); fin(); }
+  };
+}
 function vistaLugares(){
+  if(S.editId){ const l = S.lugares.find(x=>x.id===S.editId); if(l) return vistaEditar(l); S.editId = null; }
   if(!S.lugares.length){ $("app").innerHTML = `<div class="card"><p class="muted">Todavía no guardaron lugares. Tocá 📍 Estoy acá.</p></div>`; return; }
   let html = "", dia = "";
   for(const l of S.lugares){
     if(l.fecha !== dia){ dia = l.fecha; html += `<div class="day">${esc(new Date(dia+"T12:00").toLocaleDateString("es-AR",{weekday:"long", day:"numeric", month:"long"}))}</div>`; }
-    html += `<div class="card lug">${l.thumb?`<img src="${l.thumb}" alt="">`:`<div class="ph">📍</div>`}<div style="flex:1;min-width:0"><h3>${esc(l.nombre||"Sin nombre")}</h3>
+    html += `<div class="card lug">${l.thumb?`<img src="${l.thumb}" alt="">`:`<div class="ph">📍</div>`}<div style="flex:1;min-width:0"><h3>${esc(l.nombre||l.direccion||"Sin nombre")}</h3>
       <div class="muted">${esc([l.direccion, l.ciudad].filter(Boolean).join(" · "))}</div><div class="muted">${esc(l.hora||"")} · ${esc(l.quien||"")}${l.nFotos?` · ${l.nFotos} foto${l.nFotos>1?"s":""}`:""}</div>
-      ${l.nota?`<p style="margin:.4em 0 0">${esc(l.nota)}</p>`:""}${l.maps?`<a class="btn" style="margin-top:8px;min-height:38px;padding:6px 12px" href="${esc(l.maps)}" target="_blank" rel="noopener">Abrir en Maps</a>`:""}</div></div>`;
+      ${l.nota?`<p style="margin:.4em 0 0">${esc(l.nota)}</p>`:""}<div class="row" style="margin-top:8px">${l.maps?`<a class="btn" style="flex:none;min-height:38px;padding:6px 12px" href="${esc(l.maps)}" target="_blank" rel="noopener">Abrir en Maps</a>`:""}<button class="btn" style="flex:none;min-height:38px;padding:6px 12px" data-edit="${esc(l.id)}">✏️ Editar</button></div></div></div>`;
   }
   $("app").innerHTML = html;
+  $("app").querySelectorAll("[data-edit]").forEach(b => b.onclick = () => { S.editId = b.dataset.edit; render(); });
 }
 function vistaAjustes(){
   const cfg = ls.get("cfg")||{};
