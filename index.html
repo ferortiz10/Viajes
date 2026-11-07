@@ -65,6 +65,14 @@ nav.tabs .i{display:block;font-size:1.35rem}
 .vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 pre{white-space:pre-wrap;font-size:.8rem;background:var(--sunk);padding:10px;border-radius:10px;overflow:auto}
 [hidden]{display:none!important}
+.lug img{cursor:zoom-in}
+.visor{position:fixed;inset:0;background:#000;z-index:30;display:flex;align-items:center;justify-content:center;touch-action:pan-x pan-y pinch-zoom}
+.visor img{max-width:100vw;max-height:100dvh;object-fit:contain;user-select:none}
+.visor .vx,.visor .vp,.visor .vn{position:absolute;border:0;background:rgba(0,0,0,.5);color:#fff;font-size:1.6rem;width:48px;height:48px;border-radius:50%;cursor:pointer}
+.visor .vx{top:calc(12px + env(safe-area-inset-top));right:12px}
+.visor .vp{left:8px;top:50%;transform:translateY(-50%)} .visor .vn{right:8px;top:50%;transform:translateY(-50%)}
+.visor .vc{position:absolute;bottom:calc(16px + env(safe-area-inset-bottom));left:0;right:0;text-align:center;color:#fff;font-size:.95rem;text-shadow:0 1px 3px #000}
+.visor .vload{color:#fff}
 </style>
 </head>
 <body>
@@ -78,6 +86,7 @@ pre{white-space:pre-wrap;font-size:.8rem;background:var(--sunk);padding:10px;bor
 <input type="file" id="fCam" accept="image/*" capture="environment" class="vh" tabindex="-1">
 <input type="file" id="fGal" accept="image/*" multiple class="vh" tabindex="-1">
 <div class="toast" id="toast" role="status" hidden></div>
+<div class="visor" id="visor" hidden role="dialog" aria-label="Fotos"><img id="vImg" alt=""><span class="vload" id="vLoad">Cargando…</span><button class="vp" id="vPrev" aria-label="Anterior">‹</button><button class="vn" id="vNext" aria-label="Siguiente">›</button><button class="vx" id="vCerrar" aria-label="Cerrar">×</button><div class="vc" id="vCap"></div></div>
 
 <script type="module">
 const FB = "https://www.gstatic.com/firebasejs/10.12.2/";
@@ -375,16 +384,45 @@ function vistaLugares(){
     ${S.exportTxt?`<div class="field"><label for="expTxt">No se pudo copiar solo: seleccioná este texto y copialo</label><textarea id="expTxt" rows="4" readonly>${esc(S.exportTxt)}</textarea></div>`:""}</div>`, dia = "";
   for(const l of S.lugares){
     if(l.fecha !== dia){ dia = l.fecha; html += `<div class="day">${esc(new Date(dia+"T12:00").toLocaleDateString("es-AR",{weekday:"long", day:"numeric", month:"long"}))}</div>`; }
-    html += `<div class="card lug">${l.thumb?`<img src="${l.thumb}" alt="">`:`<div class="ph">📍</div>`}<div style="flex:1;min-width:0"><h3>${esc(l.nombre||l.direccion||"Sin nombre")}</h3>
+    html += `<div class="card lug">${l.thumb?`<img src="${l.thumb}" alt="Ver fotos de ${esc(l.nombre||"este lugar")}" data-ver="${esc(l.id)}">`:`<div class="ph">📍</div>`}<div style="flex:1;min-width:0"><h3>${esc(l.nombre||l.direccion||"Sin nombre")}</h3>
       <div class="muted">${esc([l.direccion, l.ciudad].filter(Boolean).join(" · "))}</div><div class="muted">${esc(l.hora||"")} · ${esc(l.quien||"")}${l.nFotos?` · ${l.nFotos} foto${l.nFotos>1?"s":""}`:""}</div>
       ${l.nota?`<p style="margin:.4em 0 0">${esc(l.nota)}</p>`:""}<div class="row" style="margin-top:8px">${l.maps?`<a class="btn" style="flex:none;min-height:38px;padding:6px 12px" href="${esc(l.maps)}" target="_blank" rel="noopener">Abrir en Maps</a>`:""}<button class="btn" style="flex:none;min-height:38px;padding:6px 12px" data-edit="${esc(l.id)}">✏️ Editar</button></div></div></div>`;
   }
   $("app").innerHTML = html;
+  $("app").querySelectorAll("[data-ver]").forEach(im => im.onclick = () => verFotos(S.lugares.find(x=>x.id===im.dataset.ver)));
   $("app").querySelectorAll("[data-edit]").forEach(b => b.onclick = () => { S.editId = b.dataset.edit; render(); });
   if($("expNuevos")) $("expNuevos").onclick = () => exportarLugares(false);
   if($("expTodos")) $("expTodos").onclick = () => exportarLugares(true);
   if($("expArchivo")) $("expArchivo").onclick = guardarArchivoLugares;
 }
+// ---------- visor de fotos a pantalla completa ----------
+const V = { fotos:[], i:0, titulo:"", cache:{} };
+async function verFotos(l){
+  if(!l) return;
+  V.titulo = l.nombre || l.direccion || ""; V.i = 0; V.fotos = l.thumb ? [l.thumb] : [];
+  $("visor").hidden = false; history.pushState({visor:1}, ""); mostrarFoto(true);
+  try{
+    if(!V.cache[l.id]){
+      const {collection, query, where, getDocs} = S.fb.fs;
+      const qs = await getDocs(query(collection(S.fb.db, "viajes", S.tripId, "fotos"), where("lugarId", "==", l.id)));
+      V.cache[l.id] = qs.docs.map(d=>d.data()).sort((a,b)=>(a.orden||0)-(b.orden||0)).map(d=>d.img).filter(Boolean);
+    }
+    if(V.cache[l.id].length) V.fotos = V.cache[l.id];
+  }catch(e){ toast("No se pudieron traer las fotos grandes."); }
+  mostrarFoto(false);
+}
+function mostrarFoto(cargando){
+  const n = V.fotos.length; $("vImg").src = V.fotos[V.i] || ""; $("vLoad").hidden = !cargando;
+  $("vPrev").hidden = $("vNext").hidden = n < 2;
+  $("vCap").textContent = [V.titulo, n > 1 ? `${V.i+1} de ${n}` : ""].filter(Boolean).join(" · ");
+}
+const pasar = d => { if(V.fotos.length < 2) return; V.i = (V.i + d + V.fotos.length) % V.fotos.length; mostrarFoto(false); };
+function cerrarVisor(desdeHist){ if($("visor").hidden) return; $("visor").hidden = true; $("vImg").src = ""; if(!desdeHist && history.state && history.state.visor) history.back(); }
+$("vPrev").onclick = () => pasar(-1); $("vNext").onclick = () => pasar(1); $("vCerrar").onclick = () => cerrarVisor(false);
+window.addEventListener("popstate", () => cerrarVisor(true));
+document.addEventListener("keydown", e => { if($("visor").hidden) return; if(e.key==="Escape") cerrarVisor(false); if(e.key==="ArrowLeft") pasar(-1); if(e.key==="ArrowRight") pasar(1); });
+let tx = null; $("visor").addEventListener("touchstart", e => { tx = e.touches.length===1 ? e.touches[0].clientX : null; }, {passive:true});
+$("visor").addEventListener("touchend", e => { if(tx==null || (window.visualViewport && visualViewport.scale > 1.05)) return; const dx = e.changedTouches[0].clientX - tx; if(Math.abs(dx) > 50) pasar(dx < 0 ? 1 : -1); tx = null; }, {passive:true});
 const textoLugares = xs => JSON.stringify({tipo:"estoy-aca", v:1, lugares:xs.map(l => ({id:l.id, nombre:l.nombre||"", direccion:l.direccion||"", ciudad:l.ciudad||"", nota:l.nota||"", fecha:l.fecha||"", hora:l.hora||"", lat:l.lat??null, lng:l.lng??null, maps:l.maps||"", quien:l.quien||"", thumb:l.thumb||"", editado:l.editado||l.ts||0}))});
 function guardarArchivoLugares(){
   const a = document.createElement("a"), u = URL.createObjectURL(new Blob([textoLugares(S.lugares)], {type:"application/json"}));
